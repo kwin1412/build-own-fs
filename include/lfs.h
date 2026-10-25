@@ -34,24 +34,23 @@ typedef struct {
 typedef struct {
     uint32_t block_id;
     uint32_t length;
+    uint32_t offset; // Add the file offset field
 } lfs_file_t;
 
-
-
 // file system API declarations
-int lfs_mount(lfs_t *lfs, const lfs_config_t *config);
-int lfs_unmount(lfs_t *lfs);
+int lfs_mount(lfs_t *fs, const lfs_config_t *config);
+int lfs_unmount(lfs_t *fs);
 int lfs_format(lfs_t *fs, const lfs_config_t *config);
 int lfs_dump(lfs_t *fs);
 
 // file API declarations
-int lfs_file_open(lfs_t *lfs, lfs_file_t *file, const char *path);
-int lfs_file_close(lfs_t *lfs, lfs_file_t *file);
-int lfs_file_read(lfs_t *lfs, lfs_file_t *file, void *buffer, uint32_t size);
-int lfs_file_write(lfs_t *lfs, lfs_file_t *file, const void *buffer, uint32_t size);
-int lfs_file_rewind(lfs_t *lfs, lfs_file_t *file);
-int lfs_file_seek(lfs_t *lfs, lfs_file_t *file, int32_t offset, uint32_t whence);
-int lfs_file_dump(lfs_t *lfs, lfs_file_t *file);
-int lfs_remove(lfs_t *lfs, const char *path);
-int lfs_rename(lfs_t *lfs, const char *oldpath, const char *newpath);
+int lfs_file_open(lfs_t *fs, lfs_file_t *file, const char *path);
+int lfs_file_close(lfs_t *fs, lfs_file_t *file);
+int lfs_file_read(lfs_t *fs, lfs_file_t *file, void *buffer, uint32_t size);
+int lfs_file_write(lfs_t *fs, lfs_file_t *file, const void *buffer, uint32_t size);
+int lfs_file_rewind(lfs_t *fs, lfs_file_t *file);
+int lfs_file_seek(lfs_t *fs, lfs_file_t *file, int32_t offset, uint32_t whence);
+int lfs_file_dump(lfs_t *fs, lfs_file_t *file);
+int lfs_file_remove(lfs_t *fs, const char *path);
+int lfs_file_rename(lfs_t *fs, const char *oldpath, const char *newpath);
 

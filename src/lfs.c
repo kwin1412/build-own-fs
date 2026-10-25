@@ -3,12 +3,15 @@
 #include <stdint.h>
 #include "lfs_struct.h"
 #include <string.h>
+#include <stdio.h>
 #include <stdlib.h>
 
 
 #define DIV_ROUND_UP(n, d) (((n) + (d) - 1) / (d))
 
 #define INVALID_ID 0xFFFFFFFFu
+
+#define min(a, b) ((a) < (b) ? (a) : (b))
 
 static uint32_t _crc32(const void *data, size_t size) {
     // Implement the CRC32 calculation here
@@ -28,93 +31,93 @@ static uint32_t _crc32(const void *data, size_t size) {
     return crc ^ 0xFFFFFFFF;
 }
 
-int lfs_mount(lfs_t *lfs, const lfs_config_t *config) {
+int lfs_mount(lfs_t *fs, const lfs_config_t *config) {
 
-    lfs->read = config->read;
-    lfs->write = config->write;
+    fs->read = config->read;
+    fs->write = config->write;
 
     uint32_t block_size = config->block_size;
     uint32_t block_id = 0;
 
     char *buf = malloc(block_size);
 
-    int err = lfs->read(buf, 0); // Read the super block from the first block
+    int err = fs->read(buf, 0); // Read the super block from the first block
     if (err != 0) {
         return err; // Return the error code if reading the super block fails
     }
 
-    memcpy(&lfs->sb, buf, sizeof(lfs->sb)); // Copy the super block from the buffer to the in-memory structure
+    memcpy(&fs->sb, buf, sizeof(fs->sb)); // Copy the super block from the buffer to the in-memory structure
     free(buf);
 
     // block_offset  += 1; // The super block is stored in the first block
-    if (lfs->sb.magic != LFS_MAGIC) {
+    if (fs->sb.magic != LFS_MAGIC) {
         return -1; // Return an error if the magic number is incorrect
     }
-    if (lfs->sb.crc32 != _crc32(&lfs->sb, sizeof(lfs->sb) - sizeof(lfs->sb.crc32))) {
+    if (fs->sb.crc32 != _crc32(&fs->sb, sizeof(fs->sb) - sizeof(fs->sb.crc32))) {
         return -1; // Return an error if the CRC32 check fails
     }
 
-    if (lfs->sb.version != LFS_VERSION) {
+    if (fs->sb.version != LFS_VERSION) {
         return -1; // Return an error if the version is incorrect
     }
 
-    if (config->block_size != lfs->sb.block_size || config->block_count != lfs->sb.total_block_count) {
+    if (config->block_size != fs->sb.block_size || config->block_count != fs->sb.total_block_count) {
         return -1; // Return an error if the block size or block count does not match the super block
     }
 
 
-    memcpy(&lfs->sb, &lfs->sb, sizeof(lfs->sb)); // Copy the super block to the in-memory structure
+    memcpy(&fs->sb, &fs->sb, sizeof(fs->sb)); // Copy the super block to the in-memory structure
 
-    block_size = lfs->sb.block_size;
-    uint32_t total_block_count = lfs->sb.total_block_count;
+    block_size = fs->sb.block_size;
+    uint32_t total_block_count = fs->sb.total_block_count;
 
     // every block can contain block_size * 8 bits of bitmap
     uint32_t block_bmp_block_count = DIV_ROUND_UP(total_block_count, block_size * 8);
 
-    lfs->block_bmp = malloc(block_bmp_block_count * block_size);
-    if (!lfs->block_bmp) {
+    fs->block_bmp = malloc(block_bmp_block_count * block_size);
+    if (!fs->block_bmp) {
         goto cleanup; // Return an error if memory allocation fails
     }
 
-    block_id = lfs->sb.block_bmp_block_id;
-    err = lfs->read(lfs->block_bmp, block_id); // Read the block bitmap from the second block
+    block_id = fs->sb.block_bmp_block_id;
+    err = fs->read(fs->block_bmp, block_id); // Read the block bitmap from the second block
     if (err != 0) {
         goto cleanup; // Return the error code if reading the block bitmap fails
     }
 
     uint32_t inode_bmp_block_count = DIV_ROUND_UP(total_block_count, block_size * 8);
-    lfs->inode_bmp = malloc(inode_bmp_block_count * block_size);
-    if (!lfs->inode_bmp) {
+    fs->inode_bmp = malloc(inode_bmp_block_count * block_size);
+    if (!fs->inode_bmp) {
         goto cleanup; // Return an error if memory allocation fails
     }
 
-    block_id = lfs->sb.inode_bmp_block_id; // The inode bitmap is stored in the third block
-    err = lfs->read(lfs->inode_bmp, block_id); // Read the inode bitmap from the third block
+    block_id = fs->sb.inode_bmp_block_id; // The inode bitmap is stored in the third block
+    err = fs->read(fs->inode_bmp, block_id); // Read the inode bitmap from the third block
     if (err != 0) {
         goto cleanup; // Return the error code if reading the inode bitmap fails
     }
 
     uint32_t inode_table_block_count = DIV_ROUND_UP(total_block_count * sizeof(inode_t), block_size);
-    lfs->inode_table = malloc(inode_table_block_count * block_size);
-    if (!lfs->inode_table) {
+    fs->inode_table = malloc(inode_table_block_count * block_size);
+    if (!fs->inode_table) {
         goto cleanup; // Return an error if memory allocation fails
     }
 
-    block_id = lfs->sb.inode_table_block_id; // The inode table is stored after the inode bitmap
-    err = lfs->read(lfs->inode_table, block_id); // Read the inode table from the appropriate block
+    block_id = fs->sb.inode_table_block_id; // The inode table is stored after the inode bitmap
+    err = fs->read(fs->inode_table, block_id); // Read the inode table from the appropriate block
     if (err != 0) {
         goto cleanup; // Return the error code if reading the inode table fails
     }
     // Implement the mount logic here
 
     uint32_t dir_table_block_count = DIV_ROUND_UP(total_block_count * sizeof(dir_entry_t), block_size);
-    lfs->dir_table = malloc(dir_table_block_count * block_size);
-    if (!lfs->dir_table) {
+    fs->dir_table = malloc(dir_table_block_count * block_size);
+    if (!fs->dir_table) {
         goto cleanup; // Return an error if memory allocation fails
     }
 
-    block_id = lfs->sb.dir_table_block_id; // Update the block offset after reading the inode table
-    err = lfs->read(lfs->dir_table, block_id); // Read the directory table from the appropriate block
+    block_id = fs->sb.dir_table_block_id; // Update the block offset after reading the inode table
+    err = fs->read(fs->dir_table, block_id); // Read the directory table from the appropriate block
     if (err != 0) {
         goto cleanup; // Return the error code if reading the directory table fails
     }
@@ -122,21 +125,21 @@ int lfs_mount(lfs_t *lfs, const lfs_config_t *config) {
     return 0; // Return 0 on success
 
 cleanup:
-    if (lfs->block_bmp) {
-        free(lfs->block_bmp);
-        lfs->block_bmp = NULL;
+    if (fs->block_bmp) {
+        free(fs->block_bmp);
+        fs->block_bmp = NULL;
     }
-    if (lfs->inode_bmp) {
-        free(lfs->inode_bmp);
-        lfs->inode_bmp = NULL;
+    if (fs->inode_bmp) {
+        free(fs->inode_bmp);
+        fs->inode_bmp = NULL;
     }
-    if (lfs->inode_table) {
-        free(lfs->inode_table);
-        lfs->inode_table = NULL;
+    if (fs->inode_table) {
+        free(fs->inode_table);
+        fs->inode_table = NULL;
     }
-    if (lfs->dir_table) {
-        free(lfs->dir_table);
-        lfs->dir_table = NULL;
+    if (fs->dir_table) {
+        free(fs->dir_table);
+        fs->dir_table = NULL;
     }
     return -1;
 }
@@ -389,45 +392,117 @@ int lfs_file_open(lfs_t *fs, lfs_file_t *file, const char *path)
     return 0; // Return 0 on success
 }
 
-int lfs_unmount(lfs_t *lfs)
+int lfs_unmount(lfs_t *fs)
 {
+    uint32_t total_block_count = fs->sb.total_block_count;
+    for (uint32_t i = 0; i < total_block_count; i++) {
+        fs->write(fs, i); // Write each block to the device
+    }
+
     return 0;
 }
 
-int lfs_file_close(lfs_t *lfs, lfs_file_t *file)
+int lfs_file_close(lfs_t *fs, lfs_file_t *file)
 {
+    // Write the file's block to the device
+    uint32_t total_block_count = fs->sb.total_block_count;
+
+    for (uint32_t i = 0; i < total_block_count; i++) {
+        fs->write(fs, file->block_id + i);
+    }
     return 0;
 }
 
-int lfs_file_read(lfs_t *lfs, lfs_file_t *file, void *buffer, uint32_t size)
+int lfs_file_read(lfs_t *fs, lfs_file_t *file, void *buffer, uint32_t size)
 {
+    if (file->offset >= file->length) {
+        return -1; // Offset is beyond the end of the file
+    }
+    uint32_t sz = min(size, file->length - file->offset);
+    uint32_t start_block_id = file->block_id + file->offset / fs->sb.block_size;
+    char *buf = malloc(DIV_ROUND_UP(sz, fs->sb.block_size));
+    if (!buf) {
+        return -1; // Failed to allocate buffer
+    }
+    // Read the file's blocks into the buffer
+    uint32_t file_block_count = DIV_ROUND_UP(sz, fs->sb.block_size);
+    for (uint32_t i = 0; i < file_block_count; i++) {
+        fs->read(fs, start_block_id + i);
+    }
+    memcpy(buffer, buf + file->offset % fs->sb.block_size, sz);
+    free(buf);
     return 0;
 }
 
 
-int lfs_file_write(lfs_t *lfs, lfs_file_t *file, const void *buffer, uint32_t size)
+int lfs_file_write(lfs_t *fs, lfs_file_t *file, const void *buffer, uint32_t size)
 {
+    if (file->offset >= file->length) {
+        return -1; // Offset is beyond the end of the file
+    }
+    uint32_t sz = min(size, file->length - file->offset);
+    uint32_t start_block_id = file->block_id + file->offset / fs->sb.block_size;
+    char *buf = malloc(DIV_ROUND_UP(sz, fs->sb.block_size));
+    if (!buf) {
+        return -1; // Failed to allocate buffer
+    }
+    memcpy(buf + file->offset % fs->sb.block_size, buffer, sz);
+    uint32_t file_block_count = DIV_ROUND_UP(sz, fs->sb.block_size);
+    for (uint32_t i = 0; i < file_block_count; i++) {
+        fs->write(fs, start_block_id + i);
+    }
+    free(buf);
     return 0;
 }
 
 
-int lfs_file_rewind(lfs_t *lfs, lfs_file_t *file)
+int lfs_file_rewind(lfs_t *fs, lfs_file_t *file)
 {
+    file->offset = 0; // Reset the file offset to the beginning of the file
     return 0;
 }
-int lfs_file_seek(lfs_t *lfs, lfs_file_t *file, int32_t offset, uint32_t whence)
+
+int lfs_file_seek(lfs_t *fs, lfs_file_t *file, int32_t offset, uint32_t whence)
 {
+    int32_t new_offset;
+    switch (whence) {
+        case 0: // SEEK_SET
+            new_offset = offset;
+            break;
+        case 1: // SEEK_CUR
+            new_offset = file->offset + offset;
+            break;
+        case 2: // SEEK_END
+            new_offset = file->length;
+            break;
+        default:
+            return -1; // Invalid whence value
+    }
+    if (new_offset < 0 || new_offset > file->length) {
+        return -1; // Offset out of range
+    }
+    file->offset = new_offset;
     return 0;
 }
-int lfs_file_dump(lfs_t *lfs, lfs_file_t *file)
+
+int lfs_file_dump(lfs_t *fs, lfs_file_t *file)
 {
-    return 0;
-}   
-int lfs_remove(lfs_t *lfs, const char *path)
-{
+    printf("File: block_id=%u, length=%u, offset=%u\n", file->block_id, file->length, file->offset);
     return 0;
 }
-int lfs_rename(lfs_t *lfs, const char *oldpath, const char *newpath)
+
+int lfs_file_remove(lfs_t *fs, const char *path)
 {
+    return _remove_file(fs, path);
+}
+
+
+int lfs_file_rename(lfs_t *fs, const char *oldpath, const char *newpath)
+{
+    dir_entry_t *dir_entry = _find_dir_entry(fs, oldpath);
+    if (!dir_entry) {
+        return -1; // Old path not found
+    }
+    memcpy(dir_entry->name, newpath, strlen(newpath) + 1);
     return 0;
 }
