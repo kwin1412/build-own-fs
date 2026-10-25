@@ -506,7 +506,7 @@ int lfs_file_read(lfs_t *fs, lfs_file_t *file, void *buffer, uint32_t size)
     }
     uint32_t sz = min(size, file->length - file->offset);
     uint32_t start_block_id = file->block_id + file->offset / fs->sb.block_size;
-    char *buf = malloc(DIV_ROUND_UP(sz, fs->sb.block_size));
+    char *buf = malloc(DIV_ROUND_UP(sz, fs->sb.block_size) * fs->sb.block_size);
     if (!buf) {
         return -1; // Failed to allocate buffer
     }
@@ -528,7 +528,7 @@ int lfs_file_write(lfs_t *fs, lfs_file_t *file, const void *buffer, uint32_t siz
     }
     uint32_t sz = min(size, file->length - file->offset);
     uint32_t start_block_id = file->block_id + file->offset / fs->sb.block_size;
-    char *buf = malloc(DIV_ROUND_UP(sz, fs->sb.block_size));
+    char *buf = malloc(DIV_ROUND_UP(sz, fs->sb.block_size) * fs->sb.block_size);
     if (!buf) {
         return -1; // Failed to allocate buffer
     }

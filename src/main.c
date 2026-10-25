@@ -24,12 +24,11 @@ static int block_dev_read_impl(void *buffer, uint32_t block_id) {
 
 static int block_dev_write_impl(const void *buffer, uint32_t block_id) {
     // Implement the actual block device write logic here
-    FILE *fp = fopen(image_path, "wb");
+    FILE *fp = fopen(image_path, "r+b");;
     if (!fp) {
         return -1;
     }
 
-    printf("wr %p\n", buffer);
     fseek(fp, block_id * BLOCK_SIZE, SEEK_SET);
     fwrite(buffer, 1, BLOCK_SIZE, fp);
     fclose(fp);
@@ -66,6 +65,9 @@ int main(void) {
     uint32_t boot_count = 0;
     lfs_file_t file;
     lfs_file_open(&lfs, &file, "boot_count");
+    lfs_file_write(&lfs, &file, &boot_count, sizeof(boot_count));
+    printf("boot_count: %d\n", boot_count);
+
     lfs_file_read(&lfs, &file, &boot_count, sizeof(boot_count));
 
     // update boot count
