@@ -31,6 +31,41 @@ static uint32_t _crc32(const void *data, size_t size) {
     return crc ^ 0xFFFFFFFF;
 }
 
+static inline int _find_first_zero_bit(bmp_t *bmp, uint32_t len)
+{
+    for (uint32_t i = 0; i < len; i++) {
+        if (bmp[i] == 0) {
+            return i; // Found the first zero bit
+        }
+    }
+    return -1; // No zero bit found
+}
+
+static inline int _bmp_set(bmp_t *bmp, uint32_t bit)
+{
+    uint32_t offset = bit / 8;
+    uint32_t index = bit % 8;
+    if (bit < 0) {
+        return -1; // Invalid offset
+    }
+
+    bmp[offset] |= (1 << index); // Set the bit to 1
+    return 0; // Return 0 on success
+}
+
+static inline int _bmp_clear(bmp_t *bmp, uint32_t bit)
+{
+    uint32_t offset = bit / 8;
+    uint32_t index = bit % 8;
+    if (bit < 0) {
+        return -1; // Invalid offset
+    }
+
+    bmp[offset] &= ~(1 << index); // Clear the bit to 0
+    return 0; // Return 0 on success
+}
+
+
 int lfs_mount(lfs_t *fs, const lfs_config_t *config) {
 
     fs->read = config->read;
@@ -144,6 +179,37 @@ cleanup:
     return -1;
 }
 
+static int _sync_lfs(lfs_t *fs)
+{
+    // Write the super block to the device
+    fs->write(&fs->sb, 0);
+
+    // Write the block bitmap to the device
+    uint32_t block_bmp_block_count = DIV_ROUND_UP(fs->sb.total_block_count, fs->sb.block_size * 8);
+    for (uint32_t i = 0; i < block_bmp_block_count; i++) {
+        fs->write((void *)fs->block_bmp + i * fs->sb.block_size, fs->sb.block_bmp_block_id + i);
+    }
+
+    // Write the inode bitmap to the device
+    uint32_t inode_bmp_block_count = DIV_ROUND_UP(fs->sb.total_inode_count, fs->sb.block_size * 8);
+    for (uint32_t i = 0; i < inode_bmp_block_count; i++) {
+        fs->write(fs->inode_bmp + i * fs->sb.block_size, fs->sb.inode_bmp_block_id + i);
+    }
+
+    // Write the inode table to the device
+    uint32_t inode_table_block_count = DIV_ROUND_UP(fs->sb.total_inode_count * sizeof(inode_t), fs->sb.block_size);
+    for (uint32_t i = 0; i < inode_table_block_count; i++) {
+        fs->write(fs->inode_table + i * fs->sb.block_size, fs->sb.inode_table_block_id + i);
+    }
+
+    // Write the directory table to the device
+    uint32_t dir_table_block_count = DIV_ROUND_UP(fs->sb.total_block_count * sizeof(dir_entry_t), fs->sb.block_size);
+    for (uint32_t i = 0; i < dir_table_block_count; i++) {
+        fs->write((void *)(fs->dir_table + i * fs->sb.block_size), fs->sb.dir_table_block_id + i);
+    }
+
+    return 0;
+}
 
 int lfs_format(lfs_t *fs, const lfs_config_t *config) 
 {
@@ -167,21 +233,42 @@ int lfs_format(lfs_t *fs, const lfs_config_t *config)
     fs->sb.block_bmp_block_id = block_offset; // The block bitmap is stored in the second block
     uint32_t block_bmp_block_count = DIV_ROUND_UP(fs->sb.total_block_count, fs->sb.block_size * 8);
     block_offset += block_bmp_block_count; // Move to the next block for the inode bitmap
+    fs->block_bmp = malloc(block_bmp_block_count * fs->sb.block_size);
+    if (fs->block_bmp == NULL) {
+        goto cleanup; // Failed to allocate memory for the block bitmap
+    }
+    memset(fs->block_bmp, 0, block_bmp_block_count * fs->sb.block_size);
 
     // inode bmp
     fs->sb.inode_bmp_block_id = block_offset; // The inode bitmap is stored in the third block
     uint32_t inode_bmp_block_count = DIV_ROUND_UP(fs->sb.total_inode_count, fs->sb.block_size * 8);
     block_offset += inode_bmp_block_count; // Move to the next block for the inode table
+    fs->inode_bmp = malloc(inode_bmp_block_count * fs->sb.block_size);
+    if (fs->inode_bmp == NULL) {
+        goto cleanup; // Failed to allocate memory for the inode bitmap
+    }
+    memset(fs->inode_bmp, 0, inode_bmp_block_count * fs->sb.block_size);
 
     // inode table
     fs->sb.inode_table_block_id = block_offset; // The inode table is stored after the inode bitmap
     uint32_t inode_table_block_count = DIV_ROUND_UP(fs->sb.total_inode_count * sizeof(inode_t), fs->sb.block_size);
     block_offset += inode_table_block_count; // Move to the next block for the directory table
+    fs->inode_table = malloc(inode_table_block_count * fs->sb.block_size);
+    if (fs->inode_table == NULL) {
+        goto cleanup; // Failed to allocate memory for the inode table
+    }
+    memset(fs->inode_table, 0, inode_table_block_count * fs->sb.block_size);
 
     // directory table
     fs->sb.dir_table_block_id = block_offset; // The directory table is stored after the inode table
     uint32_t dir_table_block_count = DIV_ROUND_UP(fs->sb.total_block_count * sizeof(dir_entry_t), fs->sb.block_size);
     block_offset += dir_table_block_count; // Move to the next block for the next section
+    fs->dir_table = malloc(dir_table_block_count * fs->sb.block_size);
+    if (fs->dir_table == NULL) {
+        goto cleanup; // Failed to allocate memory for the directory table
+    }
+    memset(fs->dir_table, 0, dir_table_block_count * fs->sb.block_size);
+
 
     fs->sb.crc32 = _crc32(&fs->sb, sizeof(fs->sb) - sizeof(fs->sb.crc32)); // Initialize CRC32 to 0
 
@@ -198,10 +285,32 @@ int lfs_format(lfs_t *fs, const lfs_config_t *config)
         dir_entry++;
     }
 
+    for (uint32_t i = 0; i <block_offset; i++) {
+        _bmp_set(fs->block_bmp, i); // Mark the block as used
+    }
+
+    // fs->dir_table = dir_entry; // No need to update fs->dir_table as it already points to the allocated memory
+
     // write all block to dev
-    uint32_t total_block_count = block_offset; // The total number of blocks used by the file system
-    for (uint32_t i = 0; i < total_block_count; i++) {
-        fs->write(fs, i); // Write each block to the device
+    _sync_lfs(fs);
+
+
+cleanup:
+    if (fs->block_bmp) {
+        free(fs->block_bmp);
+        fs->block_bmp = NULL;
+    }
+    if (fs->inode_bmp) {
+        free(fs->inode_bmp);
+        fs->inode_bmp = NULL;
+    }
+    if (fs->inode_table) {
+        free(fs->inode_table);
+        fs->inode_table = NULL;
+    }
+    if (fs->dir_table) {
+        free(fs->dir_table);
+        fs->dir_table = NULL;
     }
 
     return 0; // Return 0 on success
@@ -225,39 +334,6 @@ static dir_entry_t *_find_dir_entry(lfs_t *fs, const char *path)
     return NULL; // Directory entry not found
 }
 
-static inline int _find_first_zero_bit(bmp_t *bmp, uint32_t len)
-{
-    for (uint32_t i = 0; i < len; i++) {
-        if (bmp[i] == 0) {
-            return i; // Found the first zero bit
-        }
-    }
-    return -1; // No zero bit found
-}
-
-static inline int _bmp_set(bmp_t *bmp, uint32_t bit)
-{
-    uint32_t offset = bit / 8;
-    uint32_t index = bit % 8;
-    if (bit < 0) {
-        return -1; // Invalid offset
-    }
-
-    bmp[offset] |= (1 << index); // Set the bit to 1
-    return 0; // Return 0 on success
-}
-
-static inline int _bmp_clear(bmp_t *bmp, uint32_t bit)
-{
-    uint32_t offset = bit / 8;
-    uint32_t index = bit % 8;
-    if (bit < 0) {
-        return -1; // Invalid offset
-    }
-
-    bmp[offset] &= ~(1 << index); // Clear the bit to 0
-    return 0; // Return 0 on success
-}
 
 static int _alloc_inode(lfs_t *fs)
 {
@@ -394,9 +470,23 @@ int lfs_file_open(lfs_t *fs, lfs_file_t *file, const char *path)
 
 int lfs_unmount(lfs_t *fs)
 {
-    uint32_t total_block_count = fs->sb.total_block_count;
-    for (uint32_t i = 0; i < total_block_count; i++) {
-        fs->write(fs, i); // Write each block to the device
+    _sync_lfs(fs);
+
+    if (fs->block_bmp) {
+        free(fs->block_bmp);
+        fs->block_bmp = NULL;
+    }
+    if (fs->inode_bmp) {
+        free(fs->inode_bmp);
+        fs->inode_bmp = NULL;
+    }
+    if (fs->inode_table) {
+        free(fs->inode_table);
+        fs->inode_table = NULL;
+    }
+    if (fs->dir_table) {
+        free(fs->dir_table);
+        fs->dir_table = NULL;
     }
 
     return 0;
@@ -405,11 +495,7 @@ int lfs_unmount(lfs_t *fs)
 int lfs_file_close(lfs_t *fs, lfs_file_t *file)
 {
     // Write the file's block to the device
-    uint32_t total_block_count = fs->sb.total_block_count;
-
-    for (uint32_t i = 0; i < total_block_count; i++) {
-        fs->write(fs, file->block_id + i);
-    }
+    _sync_lfs(fs);
     return 0;
 }
 
@@ -427,7 +513,7 @@ int lfs_file_read(lfs_t *fs, lfs_file_t *file, void *buffer, uint32_t size)
     // Read the file's blocks into the buffer
     uint32_t file_block_count = DIV_ROUND_UP(sz, fs->sb.block_size);
     for (uint32_t i = 0; i < file_block_count; i++) {
-        fs->read(fs, start_block_id + i);
+        fs->read(buf + i * fs->sb.block_size, start_block_id + i);
     }
     memcpy(buffer, buf + file->offset % fs->sb.block_size, sz);
     free(buf);
@@ -449,7 +535,7 @@ int lfs_file_write(lfs_t *fs, lfs_file_t *file, const void *buffer, uint32_t siz
     memcpy(buf + file->offset % fs->sb.block_size, buffer, sz);
     uint32_t file_block_count = DIV_ROUND_UP(sz, fs->sb.block_size);
     for (uint32_t i = 0; i < file_block_count; i++) {
-        fs->write(fs, start_block_id + i);
+        fs->write(buf + i * fs->sb.block_size, start_block_id + i);
     }
     free(buf);
     return 0;
