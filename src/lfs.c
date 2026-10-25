@@ -275,6 +275,25 @@ static int _free_inode(lfs_t *fs, uint32_t inode_id)
     return ret; // Return 0 on success, -1 on failure
 }
 
+static int _alloc_block(lfs_t *fs)
+{
+    bmp_t *bmp = fs->block_bmp;
+    uint32_t len = fs->sb.total_block_count;
+    int free_block_id = _find_first_zero_bit(bmp, len);
+    if (free_block_id == -1) {
+        return -1; // No free block available
+    }
+    _bmp_set(bmp, free_block_id); // Mark the block as allocated
+    return free_block_id; // Return the allocated block ID
+}
+
+static int _free_block(lfs_t *fs, uint32_t block_id)
+{
+    bmp_t *bmp = fs->block_bmp;
+    int ret = _bmp_clear(bmp, block_id);
+    return ret; // Return 0 on success, -1 on failure
+}
+
 static int _create_file(lfs_t *fs, const char *path) 
 {
     // Find an empty directory entry
@@ -285,11 +304,17 @@ static int _create_file(lfs_t *fs, const char *path)
     dir_entry_t *dir_entry = &fs->dir_table[free_dir_entry_id];
 
     // Find an empty inode
-    uint32_t free_inode_id = fs->sb.free_inode_id;
-    if (free_inode_id == INVALID_ID) {
+    int free_inode_id = _alloc_inode(fs);
+    if (free_inode_id == -1) {
         return -1; // No free inode available
     }
     inode_t *inode = &fs->inode_table[free_inode_id];
+
+    int block_id = _alloc_block(fs);
+    if (block_id == -1) {
+        _free_inode(fs, free_inode_id); // Free the allocated inode before returning
+        return -1; // No free block available
+    }
 
     // Initialize the directory entry
     dir_entry->inode_id = free_inode_id;
@@ -298,12 +323,41 @@ static int _create_file(lfs_t *fs, const char *path)
     dir_entry->name[sizeof(dir_entry->name) - 1] = '\0';
 
     // Initialize the inode
-    inode->block_id = 0;
-    inode->next_inode_id = fs->sb.free_inode_id;
+    inode->block_id = block_id;
+    inode->next_inode_id = INVALID_ID;
 
     // Update the free lists
     fs->sb.free_dir_entry_id = dir_entry->next_entry_id;
-    fs->sb.free_inode_id = inode->next_inode_id;
+
+    return 0; // Return 0 on success
+}
+
+
+static int _remove_file(lfs_t *fs, const char *path)
+{
+    // Find the directory entry for the given path
+    dir_entry_t *dir_entry = _find_dir_entry(fs, path);
+    if (!dir_entry) {
+        return -1; // File not found
+    }
+
+    // Get the inode for the file
+    inode_t *inode = &fs->inode_table[dir_entry->inode_id];
+
+    // Free the block
+    int ret = _free_block(fs, inode->block_id);
+    if (ret != 0) {
+        return -1; // Failed to free the block
+    }
+    // Free the inode
+    ret = _free_inode(fs, dir_entry->inode_id);
+    if (ret != 0) {
+        return -1; // Failed to free the inode
+    }
+
+    // Free the directory entry
+    dir_entry->next_entry_id = fs->sb.free_dir_entry_id;
+    fs->sb.free_dir_entry_id = dir_entry - fs->dir_table;
 
     return 0; // Return 0 on success
 }
@@ -314,16 +368,66 @@ int lfs_file_open(lfs_t *fs, lfs_file_t *file, const char *path)
     dir_entry_t *dir_entry = _find_dir_entry(fs, path);
     if (!dir_entry) {
         // create file
-        return -1; // File not found
+        int ret = _create_file(fs, path);
+        if (ret != 0) {
+            return -1; // Failed to create the file
+        }
+        dir_entry = _find_dir_entry(fs, path);
+        if (!dir_entry) {
+            return -1; // File not found after creation
+        }
+        // File found after creation, proceed to open it
     }
 
     // Get the inode for the file
     inode_t *inode = &fs->inode_table[dir_entry->inode_id];
 
     // Initialize the file structure
-    file->inode = inode;
-    file->dir_entry = dir_entry;
-    file->offset = 0;
+    file->block_id = inode->block_id;
+    file->length = dir_entry->length;
 
     return 0; // Return 0 on success
+}
+
+int lfs_unmount(lfs_t *lfs)
+{
+    return 0;
+}
+
+int lfs_file_close(lfs_t *lfs, lfs_file_t *file)
+{
+    return 0;
+}
+
+int lfs_file_read(lfs_t *lfs, lfs_file_t *file, void *buffer, uint32_t size)
+{
+    return 0;
+}
+
+
+int lfs_file_write(lfs_t *lfs, lfs_file_t *file, const void *buffer, uint32_t size)
+{
+    return 0;
+}
+
+
+int lfs_file_rewind(lfs_t *lfs, lfs_file_t *file)
+{
+    return 0;
+}
+int lfs_file_seek(lfs_t *lfs, lfs_file_t *file, int32_t offset, uint32_t whence)
+{
+    return 0;
+}
+int lfs_file_dump(lfs_t *lfs, lfs_file_t *file)
+{
+    return 0;
+}   
+int lfs_remove(lfs_t *lfs, const char *path)
+{
+    return 0;
+}
+int lfs_rename(lfs_t *lfs, const char *oldpath, const char *newpath)
+{
+    return 0;
 }

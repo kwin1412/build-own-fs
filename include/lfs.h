@@ -32,7 +32,8 @@ typedef struct {
 } lfs_t;
 
 typedef struct {
-    uint32_t pass;
+    uint32_t block_id;
+    uint32_t length;
 } lfs_file_t;
 
 
