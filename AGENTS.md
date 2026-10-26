@@ -1,50 +1,68 @@
 # Codex 工程指引
 
-这是 C17/CMake 单目录教学文件系统，默认使用中文交流。README 描述v3格式、接口、
-示例和限制；修改接口或格式时同步更新文档与测试。
+这是 C17/CMake 单目录教学文件系统，默认使用中文交流。当前磁盘格式为 v1
+（`LFS_VERSION`）。README 是格式、接口、示例、限制和已知问题的权威说明；
+修改接口、磁盘格式或用户可见行为时同步更新 README。
 
 ## 结构与边界
 
-- `include/lfs.h`：唯一公开头文件，包含配置、句柄、错误码和最小文件API。
-- `include/lfs_struct.h`：内部磁盘格式常量；宿主结构不能直接持久化。
-- `src/lfs.c`：API与句柄；`lfs_dir.c`：根目录条目；`lfs_inode.c`：inode与数据。
-- `src/lfs_storage.c`：挂载、格式与分配；`lfs_device.c`：设备与编码；`lfs_dump.c`：信息打印。
-- `src/lfs_internal.h`：内部类型和接口；`src/main.c`：POSIX镜像计数器示例。
-- `tests/`：内存设备辅助代码和七组CTest；镜像测试通过独立进程运行示例。
+- `include/lfs.h`：唯一公开头文件，包含配置、句柄和文件系统/文件 API。
+- `include/lfs_struct.h`：磁盘结构（超级块、inode、目录项）与格式常量。
+- `src/lfs.c`：当前全部实现，包含挂载、格式化、分配、目录、inode、文件和 dump。
+- `src/main.c`：基于 POSIX 镜像的计数器示例。
+- `CMakeLists.txt`：`GLOB_RECURSE` 收集 `src/*.c` 和 `include/*.h`，生成静态库
+  `lfs` 和可执行文件 `build_own_fs`。注意当前 glob 也会把 `main.c` 编入 `lfs`。
+- 当前没有 `tests/`、CTest 配置或 sanitizer 选项；不要按不存在的目录或目标
+  执行验证。
 
-核心静态库 `lfs` 不管理宿主文件；设备状态由应用静态变量绑定回调。
-配置只包含整块read/write和块大小/数量，不添加上下文指针、同步或缓存选项。
-仅支持根目录文件，不增加目录操作、文件删除、截断、追加或rewind包装。
-内部回收函数仅用于失败清理。测试链接库，不直接包含实现 `.c`。
+核心静态库 `lfs` 不管理宿主文件；设备由应用通过回调提供。配置只包含整块
+read/write 回调和块大小/块数量，不添加上下文指针、同步或缓存选项。
+仅支持根目录下的扁平文件名，不增加子目录、路径解析、权限、链接、截断、追加、
+并发或缓存功能。现有 API 已包含 remove/rename/rewind/seek，保持范围克制；
+新增功能须先确认必要性并同步文档。
+`_alloc_*`、`_free_*` 等辅助函数保持 `static`，不扩展公开接口。
 
 ## 构建与验证
 
 ```sh
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTING=ON
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
 cmake --build build
-ctest --test-dir build --output-on-failure
 ```
+
+示例程序把设备路径硬编码为 `./fs.img`，配置为 4096 B × 1024 块（4 MiB），
+并通过 `"r+b"` 打开镜像，不会创建文件。验证时在临时目录预置镜像后运行：
 
 ```sh
-cmake -S . -B build-sanitize -DCMAKE_BUILD_TYPE=Debug -DLFS_SANITIZE=ON
-cmake --build build-sanitize
-ctest --test-dir build-sanitize --output-on-failure
+mkdir -p /tmp/lfs-demo && cd /tmp/lfs-demo
+truncate -s 4M fs.img
+/path/to/build/build_own_fs
 ```
 
-示例：`./build/build_own_fs build/counter.img`，不存在时创建，已有镜像只尝试挂载。
-新增模块或测试时更新CMake。构建产物位于忽略的 `build/` 或 `build-*/`。
+`src/main.c` 中 `FORCE_FORMAT` 为 1，每次运行都会格式化并覆盖 `./fs.img`，
+不要在需要保留数据的镜像上直接运行。构建产物位于忽略的 `build/` 或
+`build-*/`。
+
+当前没有自动化测试和 `LFS_SANITIZE`/`BUILD_TESTING` 选项；若新增测试，应更新
+CMake，测试链接 `lfs` 库而不是直接包含实现 `.c`，并在此处补充运行命令。
 
 ## 实现约定
 
-- 遵循根目录 `.clang-format`：Google风格、4空格缩进、80列、控制语句花括号。
-- 实例和句柄零初始化，不复制存活对象；每次文件操作校验所属实例。
-- 回调传输完整块，0成功、任何非零值失败；写回调负责持久化，关闭不提交数据。
-- 显式小端编解码，检查溢出与边界；预留元数据块、根inode和位图填充位。
-- 文件新块清零；同文件多读共享，写句柄独占。
-- 写失败后拒绝修改；关闭正常释放句柄，卸载释放资源并报告实例失败状态。
-- 位图写失败恢复内存位并保留调用者输出；不承诺已落盘修改回滚。
-- dump只读目录和inode，不读正文、不写设备、不修复；输出错误也须传播。
-- 无日志、崩溃恢复和完整fsck。不要把局部校验描述为全面一致性保障。
-- 功能变化覆盖相关边界与失败路径，沿用内存设备和CHECK断言风格。
-
-完成后报告变更与验证结果。比较差异前确认Git可用，不根据 `.git` 目录存在作判断。
+- 遵循根目录 `.clang-format`：Google 风格、4 空格缩进、80 列、控制语句花括号。
+- 实例和句柄由调用方零初始化；新增代码在操作前校验指针、边界和句柄状态，
+  不复制存活对象。
+- 回调一次传输完整块，0 成功、任何非零值失败；写回调负责持久化。文件数据在
+  write 时直接落盘，close/unmount 负责回写元数据。
+- 磁盘结构目前按宿主结构体布局直接落盘，没有显式端序转换，仅同 ABI 可读。
+  演进格式时必须改为显式小端编解码、检查溢出和边界，提升 `LFS_VERSION`，
+  并同步更新 README；不要无意改变现有布局。
+- 位图约定：1 表示占用，0 表示空闲，字节内从低位到高位；分配采用首次适配。
+  格式化时把元数据块标为已占用。
+- 文件创建目前只分配一个数据块，没有扩展分配；读写把数据块视为从 `block_id`
+  开始的连续区域。实现增长前不要假设支持多块文件。
+- dump 只读内存中的超级块、目录和 inode，不读文件正文、不写设备、不修复；
+  检测到越界或成环时返回错误。
+- 无日志、崩溃恢复和完整 fsck；不要把局部校验描述为全面一致性保障。
+- 已知缺陷（长度未回写、删除未摘链、元数据多块回写指针错误等）记录在 README
+  的“已知问题与限制”中；修复时同步更新 README。新增功能应覆盖边界和失败路径。
+- 完成后报告变更与验证结果。比较差异前确认 Git 可用，不根据 `.git` 目录存在
+  作判断。

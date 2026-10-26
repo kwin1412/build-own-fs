@@ -40,7 +40,6 @@ static int block_dev_write_impl(const void *buffer, uint32_t block_id) {
 #define FORCE_FORMAT    (1)
 
 int main(void) {
-
     const lfs_config_t cfg = {
         .read = block_dev_read_impl,
         .write = block_dev_write_impl,
@@ -82,6 +81,8 @@ int main(void) {
 
     // remember the storage is not updated until the file is closed successfully
     lfs_file_close(&lfs, &file);
+
+    lfs_dump(&lfs);
 
     // release any resources we were using
     lfs_unmount(&lfs);

@@ -1,4 +1,6 @@
 #include "lfs.h"
+#include <inttypes.h>
+#include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>
 #include "lfs_struct.h"
@@ -33,9 +35,12 @@ static uint32_t _crc32(const void *data, size_t size) {
 
 static inline int _find_first_zero_bit(bmp_t *bmp, uint32_t len)
 {
+    uint32_t bit_per_idx = sizeof(bmp_t) * 8;
     for (uint32_t i = 0; i < len; i++) {
-        if (bmp[i] == 0) {
-            return i; // Found the first zero bit
+        uint32_t idx = i / bit_per_idx;
+        uint32_t offset = i % bit_per_idx;
+        if ((bmp[idx] & ((bmp_t)1 << offset)) == 0) {
+            return (int)i;
         }
     }
     return -1; // No zero bit found
@@ -328,22 +333,113 @@ cleanup:
     return 0; // Return 0 on success
 }
 
-
-static dir_entry_t *_find_dir_entry(lfs_t *fs, const char *path) 
+static int _dump_printf(const char *format, ...)
 {
-    uint32_t valid_dir_entry_id = fs->sb.valid_dir_entry_id;
-    if (valid_dir_entry_id == INVALID_ID) {
-        return NULL; // No valid directory entry available
+    va_list args;
+    va_start(args, format);
+    int ret = vprintf(format, args);
+    va_end(args);
+    return ret < 0 ? -1 : 0;
+}
+
+int lfs_dump(lfs_t *fs)
+{
+    super_block_t *sb = &fs->sb;
+
+    if (_dump_printf("super block:\n") != 0 ||
+        _dump_printf("  magic: 0x%08" PRIx32 "\n", sb->magic) != 0 ||
+        _dump_printf("  version: %" PRIu32 "\n", sb->version) != 0 ||
+        _dump_printf("  block_size: %" PRIu32 "\n", sb->block_size) != 0 ||
+        _dump_printf("  total_block_count: %" PRIu32 "\n",
+                     sb->total_block_count) != 0 ||
+        _dump_printf("  free_block_count: %" PRIu32 "\n",
+                     sb->free_block_count) != 0 ||
+        _dump_printf("  total_inode_count: %" PRIu32 "\n",
+                     sb->total_inode_count) != 0 ||
+        _dump_printf("  free_inode_count: %" PRIu32 "\n",
+                     sb->free_inode_count) != 0 ||
+        _dump_printf("  block_bmp_block_id: %" PRIu32 "\n",
+                     sb->block_bmp_block_id) != 0 ||
+        _dump_printf("  inode_bmp_block_id: %" PRIu32 "\n",
+                     sb->inode_bmp_block_id) != 0 ||
+        _dump_printf("  inode_table_block_id: %" PRIu32 "\n",
+                     sb->inode_table_block_id) != 0 ||
+        _dump_printf("  dir_table_block_id: %" PRIu32 "\n",
+                     sb->dir_table_block_id) != 0 ||
+        _dump_printf("  valid_dir_entry_id: %" PRIu32 "\n",
+                     sb->valid_dir_entry_id) != 0 ||
+        _dump_printf("  free_dir_entry_id: %" PRIu32 "\n",
+                     sb->free_dir_entry_id) != 0 ||
+        _dump_printf("  crc32: 0x%08" PRIx32 "\n", sb->crc32) != 0) {
+        return -1;
     }
-    dir_entry_t *dir_entry = &fs->dir_table[valid_dir_entry_id]; // Start from the beginning of the directory table
-    while (dir_entry->next_entry_id != INVALID_ID) { // Assuming 0 indicates an empty entry
-        if (strcmp(dir_entry->name, path) == 0) {
-            return dir_entry; // Found the directory entry
+
+    if (_dump_printf("directory:\n") != 0) {
+        return -1;
+    }
+
+    uint32_t dir_entry_id = sb->valid_dir_entry_id;
+    uint32_t dir_entry_capacity = sb->total_block_count;
+    uint32_t visited = 0;
+
+    if (dir_entry_id == INVALID_ID) {
+        if (_dump_printf("  (empty)\n") != 0) {
+            return -1;
         }
-        dir_entry = &fs->dir_table[dir_entry->next_entry_id];
-    
+        return fflush(stdout) == 0 ? 0 : -1;
     }
-    return NULL; // Directory entry not found
+
+    while (dir_entry_id != INVALID_ID) {
+        if (dir_entry_id >= dir_entry_capacity ||
+            visited >= dir_entry_capacity) {
+            return -1;  // Broken or cyclic directory chain
+        }
+
+        dir_entry_t *entry = &fs->dir_table[dir_entry_id];
+        if (entry->inode_id >= sb->total_inode_count) {
+            return -1;  // Directory entry points outside the inode table
+        }
+        inode_t *inode = &fs->inode_table[entry->inode_id];
+
+        if (_dump_printf("  [%" PRIu32 "] name=\"%.*s\" inode_id=%" PRIu32
+                         " size=%" PRIu32 " block_id=%" PRIu32
+                         " next_inode_id=%" PRIu32 "\n",
+                         dir_entry_id, (int)sizeof(entry->name), entry->name,
+                         entry->inode_id, entry->length, inode->block_id,
+                         inode->next_inode_id) != 0) {
+            return -1;
+        }
+
+        dir_entry_id = entry->next_entry_id;
+        visited++;
+    }
+
+    return fflush(stdout) == 0 ? 0 : -1;
+}
+
+
+static dir_entry_t *_find_dir_entry(lfs_t *fs, const char *path)
+{
+    uint32_t dir_entry_id = fs->sb.valid_dir_entry_id;
+    uint32_t dir_entry_capacity = fs->sb.total_block_count;
+    uint32_t visited = 0;
+
+    while (dir_entry_id != INVALID_ID) {
+        if (dir_entry_id >= dir_entry_capacity ||
+            visited >= dir_entry_capacity) {
+            return NULL;  // Broken or cyclic directory chain
+        }
+
+        dir_entry_t *dir_entry = &fs->dir_table[dir_entry_id];
+        if (strncmp(dir_entry->name, path, sizeof(dir_entry->name)) == 0) {
+            return dir_entry;  // Found the directory entry
+        }
+
+        dir_entry_id = dir_entry->next_entry_id;
+        visited++;
+    }
+
+    return NULL;  // Directory entry not found
 }
 
 
@@ -385,42 +481,54 @@ static int _free_block(lfs_t *fs, uint32_t block_id)
     return ret; // Return 0 on success, -1 on failure
 }
 
-static int _create_file(lfs_t *fs, const char *path) 
+static int _create_file(lfs_t *fs, const char *path)
 {
-    // Find an empty directory entry
+    // Take an entry from the free list without unlinking it yet.
     uint32_t free_dir_entry_id = fs->sb.free_dir_entry_id;
-    if (free_dir_entry_id == INVALID_ID) {
-        return -1; // No free directory entry available
+    if (free_dir_entry_id == INVALID_ID ||
+        free_dir_entry_id >= fs->sb.total_block_count) {
+        return -1;  // No free directory entry available
     }
     dir_entry_t *dir_entry = &fs->dir_table[free_dir_entry_id];
+    uint32_t next_free_dir_entry_id = dir_entry->next_entry_id;
+    if (next_free_dir_entry_id != INVALID_ID &&
+        next_free_dir_entry_id >= fs->sb.total_block_count) {
+        return -1;  // Broken free directory chain
+    }
+
+    size_t path_len = strlen(path);
+    if (path_len == 0 || path_len >= sizeof(dir_entry->name)) {
+        return -1;  // Name cannot be stored and found again
+    }
 
     // Find an empty inode
     int free_inode_id = _alloc_inode(fs);
     if (free_inode_id == -1) {
-        return -1; // No free inode available
+        return -1;  // No free inode available
     }
     inode_t *inode = &fs->inode_table[free_inode_id];
 
     int block_id = _alloc_block(fs);
     if (block_id == -1) {
-        _free_inode(fs, free_inode_id); // Free the allocated inode before returning
-        return -1; // No free block available
+        _free_inode(fs, free_inode_id);  // Free the inode allocated above
+        return -1;                       // No free block available
     }
 
     // Initialize the directory entry
-    dir_entry->inode_id = free_inode_id;
+    dir_entry->inode_id = (uint32_t)free_inode_id;
     dir_entry->length = 0;
-    strncpy(dir_entry->name, path, sizeof(dir_entry->name) - 1);
-    dir_entry->name[sizeof(dir_entry->name) - 1] = '\0';
+    memcpy(dir_entry->name, path, path_len + 1);
 
     // Initialize the inode
-    inode->block_id = block_id;
+    inode->block_id = (uint32_t)block_id;
     inode->next_inode_id = INVALID_ID;
 
-    // Update the free lists
-    fs->sb.free_dir_entry_id = dir_entry->next_entry_id;
+    // Move the entry from the free list to the head of the valid list.
+    dir_entry->next_entry_id = fs->sb.valid_dir_entry_id;
+    fs->sb.valid_dir_entry_id = free_dir_entry_id;
+    fs->sb.free_dir_entry_id = next_free_dir_entry_id;
 
-    return 0; // Return 0 on success
+    return 0;  // Return 0 on success
 }
 
 
@@ -545,10 +653,12 @@ int lfs_file_write(lfs_t *fs, lfs_file_t *file, const void *buffer, uint32_t siz
         return -1; // Failed to allocate buffer
     }
     memcpy(buf + file->offset % fs->sb.block_size, buffer, sz);
+    file->length = size;
     uint32_t file_block_count = DIV_ROUND_UP(sz, fs->sb.block_size);
     for (uint32_t i = 0; i < file_block_count; i++) {
         fs->write(buf + i * fs->sb.block_size, start_block_id + i);
     }
+
     free(buf);
     return 0;
 }
