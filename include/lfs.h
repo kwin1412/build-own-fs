@@ -32,9 +32,10 @@ typedef struct {
 } lfs_t;
 
 typedef struct {
-    uint32_t block_id;
-    uint32_t length;
-    uint32_t offset; // Add the file offset field
+    uint32_t block_id;      // 文件数据块
+    uint32_t length;        // 文件逻辑长度，最大为 block_size
+    uint32_t offset;        // 当前读写位置
+    uint32_t dir_entry_id;  // 句柄关联的目录项，用于回写长度
 } lfs_file_t;
 
 // file system API declarations

@@ -10,10 +10,10 @@
 - `include/lfs_struct.h`：磁盘结构（超级块、inode、目录项）与格式常量。
 - `src/lfs.c`：当前全部实现，包含挂载、格式化、分配、目录、inode、文件和 dump。
 - `src/main.c`：基于 POSIX 镜像的计数器示例。
-- `CMakeLists.txt`：`GLOB_RECURSE` 收集 `src/*.c` 和 `include/*.h`，生成静态库
-  `lfs` 和可执行文件 `build_own_fs`。注意当前 glob 也会把 `main.c` 编入 `lfs`。
-- 当前没有 `tests/`、CTest 配置或 sanitizer 选项；不要按不存在的目录或目标
-  执行验证。
+- `CMakeLists.txt`：显式列出 `src/lfs.c` 和头文件生成静态库 `lfs`；`src/main.c`
+  单独生成 `build_own_fs`。测试位于 `tests/`，通过 CTest 运行并链接 `lfs`。
+- 已提供 `BUILD_TESTING`（默认开启）和 `LFS_SANITIZE` 选项；测试不得直接编译
+  `src/lfs.c`。
 
 核心静态库 `lfs` 不管理宿主文件；设备由应用通过回调提供。配置只包含整块
 read/write 回调和块大小/块数量，不添加上下文指针、同步或缓存选项。
@@ -25,8 +25,19 @@ read/write 回调和块大小/块数量，不添加上下文指针、同步或�
 ## 构建与验证
 
 ```sh
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTING=ON
 cmake --build build
+ctest --test-dir build --output-on-failure
+```
+
+ASan/UBSan：
+
+```sh
+cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=Debug \
+    -DBUILD_TESTING=ON -DLFS_SANITIZE=ON
+cmake --build build-asan
+ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 \
+    ctest --test-dir build-asan --output-on-failure
 ```
 
 示例程序把设备路径硬编码为 `./fs.img`，配置为 4096 B × 1024 块（4 MiB），
@@ -36,14 +47,12 @@ cmake --build build
 mkdir -p /tmp/lfs-demo && cd /tmp/lfs-demo
 truncate -s 4M fs.img
 /path/to/build/build_own_fs
+/path/to/build/build_own_fs
 ```
 
-`src/main.c` 中 `FORCE_FORMAT` 为 1，每次运行都会格式化并覆盖 `./fs.img`，
-不要在需要保留数据的镜像上直接运行。构建产物位于忽略的 `build/` 或
-`build-*/`。
-
-当前没有自动化测试和 `LFS_SANITIZE`/`BUILD_TESTING` 选项；若新增测试，应更新
-CMake，测试链接 `lfs` 库而不是直接包含实现 `.c`，并在此处补充运行命令。
+`src/main.c` 不再强制格式化：先挂载，失败时才格式化。连续运行两次可观察
+`boot_count` 从 0→1、1→2；需要保留数据的镜像不要被失败的挂载触发格式化。
+构建产物位于忽略的 `build/` 或 `build-*/`。
 
 ## 实现约定
 
@@ -55,14 +64,23 @@ CMake，测试链接 `lfs` 库而不是直接包含实现 `.c`，并在此处补
 - 磁盘结构目前按宿主结构体布局直接落盘，没有显式端序转换，仅同 ABI 可读。
   演进格式时必须改为显式小端编解码、检查溢出和边界，提升 `LFS_VERSION`，
   并同步更新 README；不要无意改变现有布局。
-- 位图约定：1 表示占用，0 表示空闲，字节内从低位到高位；分配采用首次适配。
-  格式化时把元数据块标为已占用。
-- 文件创建目前只分配一个数据块，没有扩展分配；读写把数据块视为从 `block_id`
-  开始的连续区域。实现增长前不要假设支持多块文件。
+- 位图约定：1 表示占用，0 表示空闲，字节内从低位到高位；数据块分配从数据区
+  起点开始首次适配，inode 从 0 开始。格式化时把元数据块标为已占用。
+- 文件创建只分配一个数据块；逻辑长度上限为 `block_size`，不支持跨块增长。
+  读写使用 `block_id` 单块访问，写操作必须“读整块 → 修改 → 写整块”，并在
+  分配/创建时清零数据块。
+- 读写为 POSIX 风格：推进 `offset`，返回实际传输字节数；EOF 返回 0；错误返回
+  -1。`write` 在容量不足时短写。`lfs_file_t.dir_entry_id` 用于把长度回写目录项；
+  所有句柄操作都必须校验目录项/inode/块范围。
+- 目录操作维护两条单链表：删除必须先从有效链摘除并清空目录项，再挂回空闲链；
+  重命名拒绝已存在的目标。分配/释放同步维护空闲计数，挂载时从位图重算。
+- 超级块 CRC 在每次 `_sync_lfs` 写超级块前重算；多块元数据必须逐块读写，
+  使用字节指针偏移，先写元数据表、最后写超级块。
 - dump 只读内存中的超级块、目录和 inode，不读文件正文、不写设备、不修复；
   检测到越界或成环时返回错误。
 - 无日志、崩溃恢复和完整 fsck；不要把局部校验描述为全面一致性保障。
-- 已知缺陷（长度未回写、删除未摘链、元数据多块回写指针错误等）记录在 README
-  的“已知问题与限制”中；修复时同步更新 README。新增功能应覆盖边界和失败路径。
+- 剩余限制（单数据块、无打开模式、同步非原子、无端序转换等）记录在 README
+  的“已知问题与限制”中；修复时同步更新 README。新增功能应覆盖边界和失败路径；
+  修改行为时补充 `tests/` 用例。
 - 完成后报告变更与验证结果。比较差异前确认 Git 可用，不根据 `.git` 目录存在
   作判断。
