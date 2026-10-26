@@ -37,7 +37,7 @@ static int block_dev_write_impl(const void *buffer, uint32_t block_id) {
 }
 
 
-
+#define FORCE_FORMAT    (1)
 
 int main(void) {
 
@@ -50,6 +50,11 @@ int main(void) {
     };
 
     lfs_t lfs;
+
+#if FORCE_FORMAT
+    lfs_format(&lfs, &cfg);
+#endif
+
     int err = lfs_mount(&lfs, &cfg);
     if (err) {
         // Handle mount error
@@ -65,7 +70,7 @@ int main(void) {
     uint32_t boot_count = 0;
     lfs_file_t file;
     lfs_file_open(&lfs, &file, "boot_count");
-    lfs_file_write(&lfs, &file, &boot_count, sizeof(boot_count));
+    // lfs_file_write(&lfs, &file, &boot_count, sizeof(boot_count));
     printf("boot_count: %d\n", boot_count);
 
     lfs_file_read(&lfs, &file, &boot_count, sizeof(boot_count));

@@ -289,6 +289,18 @@ int lfs_format(lfs_t *fs, const lfs_config_t *config)
         _bmp_set(fs->block_bmp, i); // Mark the block as used
     }
 
+    // fs->sb.free_block_count = fs->sb.total_block_count - block_offset;
+
+    unsigned char *zero_block = calloc(1, fs->sb.block_size);
+    if (zero_block == NULL) {
+        goto cleanup;
+    }
+    for (uint32_t id = block_offset; id < fs->sb.total_block_count; id ++) {
+        if (fs->write(zero_block, id) != 0) {
+            free(zero_block);
+            goto cleanup;
+        }
+    }
     // fs->dir_table = dir_entry; // No need to update fs->dir_table as it already points to the allocated memory
 
     // write all block to dev
